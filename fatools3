@@ -1,0 +1,1047 @@
+#!/usr/bin/python3
+# Relocate the shebang comment to your python's location
+import getopt
+import os
+import sys
+import re
+import gzip
+
+# Intialize varaiables:
+
+# count
+cnt = -1
+# to break from fatools function #Bao added commment %
+brk = False
+# for usage in chunk command
+fa_list = []
+tlen, seqnum, gap10, gap100, gap500, gap1k, gap10k, gapTotal, gapseq, field, redntID, gapPattern = 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+gc_count = 0
+delimeter, argSs, optN_n_M, opt1, overwrite_files = False, False, False, False, False
+
+id_del_set = set()
+IDlen = 0
+
+fasta = ''
+n50raw = []
+seenID = []
+seenIDd = {}
+commands = {'convert', 'search', 'split', 'filter', 'report', 'extract'} #Bao commented: set object %
+# Get the arugments from term
+argv = sys.argv[2:]
+def get_options(command): #Bao added comments %
+    """ Gets the options for command passed as argument """
+    cmmnd_state = False
+    if command == 'convert':
+        print("\nUsage: " + sys.argv[0] + """ convert [options] inputfasta | - (stdin)
+        -N convert all non-ACGT letters to N.
+        -R remove all non-ACGT letters.
+        -r print sequence in reverse compliment.
+        -U  convert sequence to upper case letters (can be combined with -N,-R,-r)
+        -u  convert sequence to lower case letters (can be combined with -N,-R,-r) \n
+        """) #Bao modified: adding more information %
+    elif command == 'search': #Bao modified: adding more information %
+        print("\nUsage: " + sys.argv[0] + """ search [options] inputfasta | - (stdin)
+        search options:
+        -d  string: search for entries containing "string" in the defline: Default is for exact match, use
+            "/string" for flexibility.
+            -1  print only the 1st match
+            -v  negate the search
+        -F  file: search for sequences for a list of IDs in the file (one ID/line).
+            -D  specify delimiter in the defline. Default is space, '|' or end of line.
+            -i  specify the field number, default is 1.
+            -v  negate the search
+        -s  string: search for entries containing "string" in the sequence
+            -1  print only the 1st match
+            -v  negate the search
+            -fN show N flanking bases\n
+         """)
+    elif command == 'split': #Bao moidified: -G flag %
+        print("\nUsage: " + sys.argv[0] + """ split [options] inputfasta | - (stdin)
+        split options:
+        -G n split the sequences as non-gap fragments, n is the number of consecutive non-callable Ns, default 1
+            -P  print gap positions only.
+        -N N split the input sequences into N chunks, each containing equal number of entries (last one may be smaller).
+        -n N plit the input sequences into chunks, each containing N fasta entries (the last chunk may be less).
+        -M N split the input sequences into chunks at ~N MB (million bp) in size (last chunk may be smaller).
+        -o "prefix" for output files (serial numbers added to prefix; required).\n
+        """)
+    elif command == 'extract':
+        print("\nUsage: " + sys.argv[0] + """ extract [options] inputfasta | - (stdin)
+        extract options:
+        -F N extract the first N fasta entries, if N is larger than the total number of entries,
+            then print to the last entries.
+        -f N extract first N bp, prints the entire sequence if N is larger than the total length.
+        -L N extract last N sequence entries. If N is larger than the total number of entries, then print all entries.
+        -l N extract last N bp, prints the entire sequence if N is larger than the total length.
+        -S N extract from the Nth entry to the last entry.
+        -s N extract from N bp to the end.
+
+        Use -S N -F M for entries from N to M; use -F N and -L N to extract both the first and last N entries.
+        Use -s N -f M for sequence from N to M bp; use -f N and -l N to extract both the first and last N bp as
+          one sequence separated by a space.
+        Note: The -f, -s, and -l options were designed for working with a single long sequences, even though they will
+          work for multiple sequences by applying the same operation to all sequences.\n
+        """)
+    elif command == 'report':
+        print("\nUsage: " + sys.argv[0] + """ report [options] inputfasta | - (stdin)
+        report options:
+        -c print the total number of fasta entries in the input.
+        -D print deflines in the original form.
+        -d print deflines in short form (part before the first space).
+        -F print fasta entries with all sequence in one line.
+        -f print fasta entries as in the input.
+        -L print original defline +[\\t] length.
+        -l print short defline +[\\t] length.
+        -n print sequences without the define.
+        -S print sequence summary statistics plus detailed gap info.
+            -h  disable the header above the outputs
+            -H  print parameters in human friendly form
+        -s print sequence summary statistics including N50.
+            -h  disable the header above the outputs
+            -H  print parameters in human friendly form\n
+        """)
+    elif command == 'filter':
+        print("\nUsage: " + sys.argv[0] + """ filter [options] inputfasta | - (stdin)
+        filter options:
+        -g N ignore sequences with N or more Ns
+        -L N  skip sequences longer than N bp.
+        -l N  skip sequences shorter than N bp.
+        -R 1/N skip redundant entries based on sequence.
+            1:  use the entire sequence
+            N:  use only the first and last N bases.
+        -r 1/2
+            1:  skip redundant entry based ID
+            2:  keep redundant entries by adding a serial number to the identical IDs to make each unique.
+
+        Use -l N -L M for sequences with length from N to M bp (inclusive).
+        With all options, '-e' can be added to print the skipped entries in STDERR, which can be captured using 2>[skipped.fa].\n
+        """)
+    else:
+        cmmnd_state = True
+    return cmmnd_state
+
+justCommands = "\nUsage: " + sys.argv[0] + """ module flag(s) sub-flag(s) inputfasta OR - (stdin)
+ commands:
+    convert
+    extract
+    filter
+    report
+    search
+    split
+    """
+
+try:
+    # define the options used by the program and user, if there was no input, print justCommands
+    opts, args = getopt.getopt(argv, 'd:D:W:s:S:n:N:M:o:G:F:B:I:i:E:p:l:L:r:R:g:f:tavthUuecHP1q')
+except:
+    print(justCommands)
+    sys.exit(1)
+
+# check for validity of first argument
+try:
+    if sys.argv[1] not in commands:
+        print(justCommands)
+        sys.exit(1)
+# no argument was provided
+except IndexError:
+    print(justCommands)
+    sys.exit(1)
+# check for validity of second argument
+try:
+    sys.argv[2]
+# print options if argument is not valid
+except:
+    get_options(sys.argv[1])
+    sys.exit(1)
+
+#Read the FASTA file:
+# Function to turn FASTQ into FASTA: Bao added
+
+def fastqa(fastq,write=False,filename=None):
+    """Accept a fastq file then return a fasta file"""
+    w=write # False => print to stdout ; True ==> writing to new files
+    filename=filename
+    if "gz" in sys.argv[-1].split("."): # Split the name of the file and search for the pattern gz
+        with gzip.open(fastq,"rb") as file: # Handle gzip file
+            lines=file.readlines() # A list of lines but for gzip file
+    else:
+        with open(fastq,"r") as file: # Handle standard file
+            lines=file.readlines() # A list of lines but for standard file
+    if "@" in lines[0]:
+        for i in range(0,len(lines),4):
+           if w == False:
+               print(str(lines[i].replace("@",">",1)) + str(lines[i+1].replace("\n",""))) #Replace the FIRST @ with the > symbol, print to std.out
+           elif w == True:
+               with open(filename,"a") as f:
+                f.write(str(lines[i].replace("@",">",1)) + str(lines[i+1])) #Replace the FIRST @ with the > symbol, print to std.out
+    else:
+        print("This is not a FASTQ file, please check and run it again")
+
+def read_file_bytes(file, option):
+    """ Reads a file in bytes that containing entries and sends an individual entry to
+    readFile().
+    """
+    last_seq_chunk = ''
+    split_delim = '\n>' # Split the file by the ">" sign
+    data = file.read(2500000)
+    # print(data)
+    # print('----------------------------------------------------')
+    while data: #As long the file contain values, the code will execute
+        try:
+            sequences = data.decode().split(split_delim)
+        except:
+            sequences=data.split(split_delim)
+        last_byte_read = data[-1]
+        if last_byte_read == '\n':
+            split_delim = '>'
+            last_byte_read = ''
+        else:
+            split_delim = '\n>'
+        # print(sequences)
+        generator = (fasta for fasta in sequences)
+        first_chunk = True
+        for fasta in generator:
+            last_seq_chunk = readFile(fasta, sequences, last_seq_chunk, first_chunk, False, option)
+            first_chunk = False
+        data = file.read()
+#Read sequence by sequence:
+    sequences = [None] # Help to print the report modules
+    readFile(last_seq_chunk, sequences, '', False, True, option)#Print the report modules
+
+# Read the FASTA file in chunks:
+
+def readFile(seq, sequences, last_seq_chunk, first_chunk, is_last_seq, option):
+    """Makes sure the entries read in bytes are put together correctly"""
+    seq_copy = seq
+    if first_chunk:
+        if last_seq_chunk != '' or (not last_seq_chunk.isspace()):
+            seq = "{}{}".format(last_seq_chunk, seq)
+    # if last sequence in chunk
+    if seq_copy == sequences[-1] and seq_copy != '':
+        last_seq_chunk = seq
+        return last_seq_chunk
+    if seq == '':
+        return ''
+    # print('\n||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||')
+    # print(seq)
+    # print('||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||\n')
+    last_seq_chunk = ''
+    if option[0] == 1:
+        fatools(seq, is_last_seq)
+    else:
+        searchByID(seq, option[1], option[2])
+    return last_seq_chunk
+
+def reversecom(sequence):
+    """ Returns the reverse compliment of a sequence """
+    # take the compliment of the sequence
+    compp = str.maketrans('ACTGactg', 'TGACtgac')
+    sequence= sequence.translate(compp)
+    # reverse the sequence
+    sequence = sequence[::-1]
+    return sequence
+
+
+def acgtton(sequence):
+    """ Changes all non-ACTG characters to N's and returns the sequence """
+    sequence.strip(r'\W')
+    sequence = re.sub(r'[^ACTGactg]', 'N', sequence)
+    return sequence
+
+
+def ignoren(sequence):
+    """ Searches the sequence for the number of Ns specified and returns true if found and prints
+    sequence to stderr """
+    optg = False
+    global opts
+    global fasta
+    s = False
+    for o, a in opts:
+        if o == '-g':
+            optg = True
+            match_g = re.search(r'[Nn]{' + a + ',}', sequence)
+    if optg:
+        if match_g:
+            s = True
+    else:
+        get_options(sys.argv[1])
+        sys.exit()
+    return s
+
+
+def extractFromSeq(extract_fromN, extract_fromN_arg, extract_firstN,
+                   extract_firstN_arg, extract_lastN, extract_lastN_arg, seq_len, seq_old, defn_old):
+    """Extracts the specified number of base pairs in a sequence"""
+    if extract_lastN and extract_firstN:
+        if (int(extract_firstN_arg) + int(extract_lastN_arg)) > seq_len:
+            seq = seq_old
+            defn = defn_old
+        else:
+            seq = seq_old[:int(extract_firstN_arg)] + " " + seq_old[-int(extract_lastN_arg):]
+            defn = defn_old + ":" + str(extract_firstN_arg) + "/" + str(seq_len - extract_lastN_arg) + ':' + str(
+                seq_len)
+
+    elif extract_lastN:
+        seq = seq_old[-int(extract_lastN_arg):]
+        defn = defn_old + ':' + str(seq_len - extract_lastN_arg) + ':' + str(seq_len)
+
+    elif extract_fromN and extract_firstN:
+        if int(extract_fromN_arg) > int(extract_firstN_arg):
+            print("Error: Argument for -s can't be greater than argument for -f")
+            sys.exit()
+        seq = seq_old[int(extract_fromN_arg) - 1:int(extract_firstN_arg)]
+        defn = defn_old + ':' + extract_fromN_arg + ':' + extract_firstN_arg
+
+    elif extract_fromN:
+        seq = seq_old[int(extract_fromN_arg) - 1:]
+        defn = defn_old + ':' + extract_fromN_arg + ':' + str(seq_len)
+        if int(extract_fromN_arg) > seq_len:
+            sys.stderr.write("N larger than the total length.\n")
+
+    elif extract_firstN:
+        seq = seq_old[:int(extract_firstN_arg)]
+        defn = defn_old + ':1' + ':' + extract_firstN_arg
+
+    if extract_fromN or extract_firstN or extract_lastN:
+        print(defn + '\n' + seq)
+
+
+def countGaps(gap):
+    global gapTotal, gap10, gap100, gap500, gap1k, gap10k
+    gaplen = len(gap.group())
+    gapTotal += gaplen
+    if gaplen <= 10:
+        gap10 += 1
+    elif gaplen <= 100:
+        gap100 += 1
+    elif gaplen <= 500:
+        gap500 += 1
+    elif gaplen <= 1000:
+        gap1k += 1
+    else:
+        gap10k += 1
+
+
+def fatools(record, lastEntry):
+    """Tools to manipulate FASTA sequences"""
+    global brk, redntID, tlen, seqnum, optN_n_M, argSs, cnt, gapTotal, gapseq, opt1, overwrite_files, gc_count
+    global gap10, gap100, gap500, gap1k, gap10k
+    cnt = cnt + 1
+
+    nextt = False
+    if brk:
+        sys.exit(0)
+
+    fasta = record
+    lines = fasta.split('\n', 1)
+
+    try:
+        defn = ">{}".format(lines[0].strip('>'))
+        defn_old = defn  # copy of old defn
+        seqf = lines[1]
+        seq = lines[1].strip('\t\n\r').replace('\n', '')
+    except:
+        # Empty Sequence!
+        seqf = ''
+        seq = ''
+
+    seq_old = seq  # copy of old seq
+
+    if seq.isalpha():
+        seq_len = len(seq)
+    else:
+        seq_len = len(re.sub('[^a-zA-Z]', '', seq))
+
+    if sys.argv[1] == 'convert':
+        validOpt = False
+        opt_U, opt_u, opt_N, opt_R, opt_r, opt_o, opt_q, opt_a = False, False, False, False, False, False, False, False
+        for o, a in opts:
+             if o == '-U':
+                 opt_U =True
+                 validOpt = True
+            # to lower case
+             elif o == '-u':
+                 opt_u = True
+                 validOpt = True
+             elif o == "-a":
+                 opt_a = True
+                 validOpt= True
+                 Uu_Tt = str.maketrans('TtUu', 'UuTt')
+                 seq= seq.translate(Uu_Tt)
+             elif o == '-N':
+                seq=seq.strip(r'\W')
+                seq = acgtton(seq)
+                opt_N=True
+                validOpt = True # Bao modified %
+             elif o == '-R': # Remove all non-cannon characters
+                seq=seq.strip(r'\W')
+                seq = re.sub(r'[^ACTGUactgu]', '', seq)
+                opt_R=True
+                validOpt = True
+             elif o == '-r':
+                seq = reversecom(seq)
+                opt_r= True#Bao modifed %
+                validOpt = True
+            # From fastq to fasta:
+             elif o == '-q':
+                opt_q = True
+                validOpt=True
+             if o == "-o" and opt_q:
+                opt_o = True
+                filename=a
+                validOpt=True
+                with open(filename,"w") as file:
+                    file.write("")
+
+        if opt_q and opt_o:
+            fastqa(sys.argv[-1],True,filename)
+        elif opt_q:
+            fastqa(sys.argv[-1])
+
+        if opt_U:
+            seq=seq.upper()
+            print(defn + '\n' + seq)
+            # to lower case
+        elif opt_u:
+                 seq=seq.lower()
+                 print(defn + '\n' + seq.lower())
+        elif opt_R | opt_r | opt_N | opt_a:
+                 print(defn + '\n' + seq)
+
+
+        if not validOpt:
+            get_options(sys.argv[1])
+            sys.exit()
+
+    elif sys.argv[1] == 'search': # Bao added flanking flag -f %
+        nextt = False
+        negate, opt_d, opt_s, opt_f, opt_q  = False, False, False, False, False
+        sequence_found = False
+
+        for o, a in opts: #Bao modified, added a small loop to remove order necessity %
+            if o == '-f':
+                opt_f= True
+                position=int(a)
+
+        for o, a in opts: #Bao modified, added a small loop to remove order necessity %
+            if o == '-q':
+                opt_q= True
+
+
+        for o, a in opts:
+            if o == '-v':
+                negate = True
+
+        for o, a in opts:
+            if o == '-d':
+                opt_d = True
+                if "/" in a:
+                    look_for_str = a.strip('/').strip()
+                else:
+                    look_for_str = r'\b' + a + r'\b'
+            elif o == '-s':
+                opt_s = True
+                look_for_str = a
+                look_rvrs_comp = reversecom(look_for_str)
+
+        if not opt_d and not opt_s and not opt1:
+            get_options(sys.argv[1])
+            sys.exit()
+        if o == '-1':
+            opt1 = True
+
+        if opt_s and (re.search(look_for_str, seq, re.IGNORECASE) or re.search(look_rvrs_comp, seq, re.IGNORECASE)):
+            sequence_found = True
+
+        if (opt_d and negate and re.search(look_for_str, defn, re.IGNORECASE)) or (negate and sequence_found):
+            nextt = True
+        elif (opt_d and not re.search(look_for_str, defn, re.IGNORECASE) and not negate) or (
+                opt_s and not sequence_found and not negate):
+            nextt = True
+
+        if nextt:
+            return
+
+
+
+        # make matching motif lower case and the rest of the sequence upper case
+        if not negate and opt_s:
+            seqf = seqf.upper()
+            seq_split = seqf.split(look_for_str.upper())
+            seqf = look_for_str.lower().join(seq_split)
+            seq_split = seqf.split(look_rvrs_comp.upper())
+            seqf = look_rvrs_comp.lower().join(seq_split)
+        if opt_f == False:
+            print("{}\n{}".format(defn, seqf))
+        elif opt_f==True:
+            # Bao added: prepare position flanking for regex (string to find with tagged positions) %
+            flank_tag= "."*position + look_for_str.lower() + "."*position +"|" + "."*position + look_rvrs_comp.lower() + "."*position
+            extracted= re.findall(flank_tag,seqf)
+            print(defn + "\n" + "\n".join(extracted))
+
+        if opt1:
+            brk = True
+
+    elif sys.argv[1] == 'split':
+        pos_only = False
+        optG = False
+        optN_n_M = False
+        sectn = 1 #Bao comment
+        sectn_s = 0
+        sectnlgth_temp = 0
+        output_prefix_provided = False
+        for o, a in opts:
+            if o == '-o':
+                output_prefix_provided = True
+                if not overwrite_files:
+                    for filename in os.listdir(os.getcwd()):
+                        if a + '_sub' in filename:
+                            ovwrt = input('The prefix provided is already being used. Would you like to '
+                                              'overwrite the existing files? (y/n)\n').strip() #Bao modified % change raw_input to input
+                            if ovwrt == 'n':
+                                sys.exit()
+                            elif ovwrt == 'y':
+                                overwrite_files = True
+                                break
+
+            # divide into chunks options
+            if (o == '-N') or (o == "-n") or (o == "-M"):
+                fa_dict = {'D': defn, 'S': seq}
+                fa_list.append(fa_dict)
+                optN_n_M = True
+            # split as non-gap fragments option
+            elif o == '-G':
+                optG = True
+                num = a
+            # print gap position only
+            elif o == '-P':
+                pos_only = True
+
+        if not optN_n_M and not pos_only and not optG:
+            get_options(sys.argv[1])
+            sys.exit()
+        if not output_prefix_provided and not optG:
+            sys.stderr.write("Please provide output prefix with -o prefix")
+            sys.exit()
+        if optN_n_M and not lastEntry:
+            return
+
+        if optG:
+            match_g = re.search(r'[Nn]{' + num + ',}', seq)
+            def_short = defn.split(" ")[0]
+            if match_g:
+                match_g = re.finditer(r'[Nn]{' + num + ',}', seq)
+                for gap in match_g:
+                    s = gap.start() + 1
+                    e = gap.end()
+                    l = len(gap.group())
+                    # print gap positions only
+                    if pos_only:
+                        print(def_short + '\t' + str(s) + '\t' + str(e))
+                    else:
+                        nongap = re.split(r'[Nn]{' + num + ',}', seq)
+                        length = len(nongap)
+                        sectnlgth = len(nongap[sectn - 1])
+                        sectnlgth_temp = sectnlgth
+                        sectn_e = sectn_s + sectnlgth_temp
+                        if sectnlgth > 0:
+                            print(def_short + '|' + str(sectn) + '/' + str(length) + '|' + str(sectn_s) +
+                                  '-' + str(sectn_e) + '|gap|' + str(l) + '|' + str(s) + '-' + str(e))
+                            print(nongap[sectn - 1])
+                        sectn += 1
+                        sectn_s += sectnlgth + l
+                if not pos_only:
+                    sectnlgth = len(nongap[sectn - 1])
+                    if sectnlgth > 0:
+                        print(def_short + '|' + str(sectn) + '/' + str(length) + '|' + str(sectn_s) + '-' + str(
+                            sectn_e) + '|gap|-1')
+                        print(nongap[sectn - 1])
+                    print("\n")
+            # print the original if no gap
+            elif not pos_only:
+                print("{} 1-{}\n{}".format(def_short, seq_len, seqf))
+            return
+    elif sys.argv[1] == 'extract':
+        first_Nseq = False
+        first_Nseq_arg = 0
+        last_Nseq = False
+        last_Nseq_arg = 0
+        N_to_last = False
+        nextt = False
+        for o, a in opts:
+            if o == '-t':
+                seqf = acgtton(seqf)
+
+            if o == '-L':
+                last_Nseq = True
+                last_Nseq_arg = int(a)
+                fa_list.append("{}\n{}".format(defn, seqf))
+
+            if o == '-F':  # extract the first N sequence entries
+                first_Nseq = True
+                first_Nseq_arg = int(a)
+                if cnt + 1 > int(a):
+                    brk = True
+                    nextt = True
+            elif o == '-S':  # extract from the Nth entry to the last
+                N_to_last = True
+                if lastEntry:
+                    if int(a) > cnt + 1:
+                        sys.stderr.write("N larger than the total number of entries.\n")
+                if cnt + 1 < int(a):
+                    nextt = True
+                    break
+
+        fromNbps = False  # sequence part ###
+        firstNbps = False
+        lastNbps = False
+        lastNbps_arg = 0
+        fromNbps_arg, firstNbps_arg = '', ''
+        for o, a in opts:
+            # extract sequence up to to N position, 1 based
+            if o == '-f':
+                firstNbps = True
+                firstNbps_arg = a
+            # extract sequence from N position, 1 based
+            if o == '-s':
+                fromNbps = True
+                fromNbps_arg = a
+            if o == '-l':
+                lastNbps = True
+                lastNbps_arg = int(a)
+
+        # dont break if we also want to extract the last N sequences
+        if last_Nseq and first_Nseq:
+            brk = False
+
+        if last_Nseq and lastEntry:
+            if first_Nseq and (first_Nseq_arg + last_Nseq_arg) > cnt + 1:
+                i = first_Nseq_arg
+            elif last_Nseq_arg > cnt + 1:
+                i = 0
+            else:
+                i = cnt + 1 - last_Nseq_arg
+            while i < cnt + 1:
+                print(fa_list[i])
+                i += 1
+
+        if first_Nseq or N_to_last:
+            if nextt:
+                return
+            elif fromNbps or firstNbps or lastNbps:
+                pass
+            else:
+                print(defn + '\n' + seqf + '\n')
+        extractFromSeq(fromNbps, fromNbps_arg, firstNbps, firstNbps_arg, lastNbps, lastNbps_arg, seq_len, seq_old,
+                       defn_old)
+
+        if not first_Nseq and not N_to_last and not last_Nseq and not fromNbps and not firstNbps and not lastNbps:
+            get_options(sys.argv[1])
+            sys.exit()
+
+    elif sys.argv[1] == 'report':
+        tlen += seq_len
+        # seqnum will keep track of non-empty sequences
+        if seq != '':
+            seqnum += 1
+        n50raw.append(seq_len)
+        optl, optL, optdD, optfF, optnd, optC = False, False, False, False, False, False
+        validOpt = False
+        global gapPattern
+        for o, a in opts:
+            # count fasta entries
+            if o == '-c':
+                optC = True
+                validOpt = True
+                break
+            # summary
+            if (o == '-S') or (o == '-s'):
+                # count G and C base pairs
+                for bp in seq:
+                    bp = bp.upper()
+                    if bp == "G" or bp == "C":
+                        gc_count += 1
+                if argSs == False:
+                    gapPattern = re.compile(r'[Nn]{1,}')
+                argSs = True
+                validOpt = True
+                # count gaps and gap length
+                match_su = gapPattern.finditer(seq)
+                gapseq += 1
+                [countGaps(gaps) for gaps in match_su]
+            # print short defline
+            if o == '-l':
+                optl = True
+                validOpt = True
+            # print original defline
+            if o == '-L':
+                optL = True
+                validOpt = True
+            # print fasta entries as in the input
+            if o == '-f':
+                print("{}\n{}".format(defn, seqf))
+                optfF = True
+                validOpt = True
+            # print sequence in one line
+            elif o == '-F':
+                print(defn + '\n' + seq + '\n')
+                optfF = True
+                validOpt = True
+            # sequence without defline
+            elif o == '-n':
+                print(seqf + '\n')
+                optnd = True
+                validOpt = True
+            # print defline in short form
+            if o == '-d':
+                optdD = True
+                defn = defn.strip('>')
+                defn = re.search(r'[^\s]*', defn)
+                defn = defn.group()
+                validOpt = True
+            # print original defline
+            elif o == '-D':
+                optdD = True
+                defn = defn.strip('>')
+                validOpt = True
+
+        if optC and lastEntry:
+            print("{} fasta entries found".format(format(seqnum, ",d")))
+        if optl or optL:
+            if optl:
+                defn = defn.strip('>').split()[0]
+                print(defn,seq_len)
+            elif optL:
+                defn = defn.strip('>')
+                print(defn,seq_len)
+            #print("{}\t{}").format(defn, seq_len)
+        if optdD:
+            print(defn)
+        if not validOpt:
+            get_options(sys.argv[1])
+            sys.exit()
+
+    elif sys.argv[1] == 'filter':
+        defn = re.search(r'[^\s]*', defn)
+        defn = defn.group()
+        optr1 = False
+        optr2 = False
+        optR1 = False
+        optR2 = False
+        optl = False
+        optL = False
+        optg = False
+        opt_e = False
+        for o, a in opts:
+            if o == '-r' and a == '1':  # remove redundant entry
+                optr1 = True
+            elif o == '-r' and a == '2':  # keep redundant entry by adding a random string
+                optr2 = True
+            elif o == '-R':
+                if a == '1':  # remove redundant entries based on sequence
+                    optR1 = True
+                elif int(a) > 1:  # remove redundant entries based on the first and last N bases
+                    optR2 = True
+                    num = a
+            if o == '-l':  # sequence minimal length
+                optl = True
+                minimal = int(a)
+            elif o == '-L':  # sequence maximal length
+                optL = True
+                maximum = int(a)
+            if o == '-g':  # ignore sequences with N or more Ns
+                optg = True
+            if o == "-e":  # print skipped sequences to STDERR
+                opt_e = True
+
+        if not optr1 and not optr2 and not optR1 and not optR2 and not optl and not optL and not optg:
+            get_options(sys.argv[1])
+            sys.exit()
+        if optg:
+            if ignoren(seq):
+                if opt_e:
+                    # ignore sequences with N or more Ns by printing to STDERR
+                    sys.stderr.write("{}\n{}".format(defn, seqf))
+                return
+            else:
+                print("{}\n{}".format(defn, seqf))
+
+        if optl or optL:
+            if optl and seq_len < minimal:
+                if opt_e:
+                    # print to STDERR to skip
+                    sys.stderr.write("{}\n{}".format(defn, seqf))
+                return
+            elif optL and seq_len > maximum:
+                if opt_e:
+                    # print to STDERR to skip
+                    sys.stderr.write("{}\n{}".format(defn, seqf))
+                return
+            print("{}\n{}".format(defn, seqf))
+
+        if optr1 or optr2 or optR1 or optR2:
+            # add a serial number to redundant entries
+            if optr2:
+                if defn not in seenID:
+                    seenID.append(defn)
+                    print(defn + '\n' + seqf)
+                    return
+                else:
+                    redntID += 1
+                    while defn in seenID:
+                        defn = defn + '.' + str(redntID)
+                    seenID.append(defn)
+                    print(defn + '\n' + seqf)
+                    return
+            elif optr1:
+                if defn in seenID:
+                    if opt_e:
+                        # print to STDERR to skip redundant entry
+                        sys.stderr.write("{}\n{}".format(defn, seqf))
+                    return
+                else:
+                    seenID.append(defn)
+                    print("{}\n{}".format(defn, seqf))
+                    return
+            elif optR1:
+                key = seq
+            elif optR2:
+                left = seq[:int(num)]
+                last = seq[-int(num):]
+                key = left + last
+            if key in seenIDd.keys():
+                if seenIDd[key] == seq_len:
+                    if opt_e:
+                        # print to STDERR to skip redundant entry
+                        sys.stderr.write("{}\n{}".format(defn, seqf))
+                    return
+                else:
+                    seenIDd[key] = seq_len
+            else:
+                print("{}\n{}".format(defn, seqf))
+                seenIDd[key] = seq_len
+
+    # operations that depend on the information collected from the previous sequences
+    if lastEntry:
+        # divide into chunks options
+        if optN_n_M:
+            outfile = ''
+            optM = False
+            for o, a in opts:
+                if o == '-n':
+                    chunksize = int(a)
+                elif o == '-N':
+                    chunknum = a
+                    chunksize = len(fa_list) / int(chunknum)
+                # divide into chunks of ~(chunksize)MB
+                elif o == '-M':
+                    optM = True
+                    chunksize = int(a)
+                if o == '-o':
+                    outfile = a
+            outfile = outfile + '_sub'
+            count, n = 0, 1
+            chunkfile = open(outfile + str(n) + '.fa', 'w')
+            while (fa_list):
+                s = fa_list.pop(0)
+                if optM:
+                    # sequence length in MB
+                    count += len(s['S']) / 1048576.0
+                else:
+                    count += 1
+                if count > chunksize:
+                    n += 1
+                    count = 0
+                    chunkfile.close()
+                    chunkfile = open(outfile + str(n) + '.fa', 'w')
+                chunkfile.write(s['D'] + "\n" + s['S'])
+                chunkfile.write('\n')
+            chunkfile.close()
+        # summary
+        if argSs:
+            print_with_gap, disable_header, human_readable = False, False, False
+
+            for o, a in opts:
+                if o == '-S':
+                    print_with_gap = True
+                if o == '-h' or a == '-h':
+                    disable_header = True
+                if o == '-H' or a == '-H':
+                    human_readable = True
+
+            Tlen = 0
+            avg = int(tlen / seqnum)
+            # sorting lengths from smallest to largest
+            n50raw.sort()
+            max_ = n50raw[-1]
+            min_ = n50raw[0]
+            for lenn in n50raw:
+                Tlen += lenn
+                if Tlen >= tlen / 2:
+                    N50s = lenn
+                    break
+            tmpall = cnt + 1
+
+            sampleID = sys.argv[-1]
+            if "." in sampleID:
+                sampleID = sampleID.split(".")[0]
+
+            non_gap = tlen - gapTotal
+            gc_content = ( gc_count/float(non_gap) ) * 100
+            gc_content = "{:.2f}".format(gc_content) + "%"
+            seqnum = format(seqnum, ",d")
+            tlen = format(tlen, ",d")
+            avg = format(avg, ",d")
+            min_ = format(min_, ",d")
+            max_ = format(max_, ",d")
+            N50s = format(N50s, ",d")
+
+            # add some buffer spaces to make it human readable
+            if human_readable:
+                mssg = "{}  {}  {}  {}  {}  {}-{}  {}  ".format(sampleID, " "*(abs(min(len(sampleID)-8, 0)))+seqnum,
+                                                            " "*(abs(min(len(seqnum)-4, 0)))+tlen,
+                                                            " "*(abs(min(len(tlen)-11, 0)))+gc_content,
+                                                            " "*(abs(min(len(gc_content)-9, 0)))+avg,
+                                                            " "*(abs(min(len(avg)-7, 0)))+min_, max_,
+                                                            " "*(abs(min(len(max_)+len(min_)+1-7, 0)))+N50s)
+                header = "sampleID{}  Seq#{}  totalSeqLen{}  GCcontent{}  Average{}  min-max{}  N50".format(
+                    " "*max(len(sampleID)-8, 0), " "*max(len(seqnum)-4, 0), " "*max(len(tlen)-11, 0),
+                    " "*max(len(gc_content)-9, 0), " "*max(len(avg)-7, 0), " "*max((len(min_) + len(max_)+1-7), 0))
+
+                if print_with_gap:
+                    non_gap = format(non_gap, ",d")
+                    gapTotal = format(gapTotal, ",d")
+                    header += "  {}  nonGapLen{}  GapLen{}  Gap#@10;100;500;1k;>1k bp".format(
+                        " "*max(len(N50s) - 3, 0), " " * max(len(non_gap) - 9, 0), " " * max(len(gapTotal) - 6, 0))
+                    mssg += "  {}  {}  {};{};{};{};{}".format(" "*abs(min(len(N50s)-3, 0))+non_gap,
+                                                                 " "*abs(min(len(non_gap)-9,0))+gapTotal,
+                                                                 " "*abs(min(len(gapTotal)-6, 0))+str(gap10),
+                                                           gap100, gap500, gap1k, gap10k)
+                print(header)
+            else:
+                mssg = "{} {} {} {} {} {}-{} {}".format(sampleID, seqnum, tlen, gc_content, avg, min_, max_, N50s)
+                header = "(sampleID/Seq#/totalSeqLen/GCcontent/Average/min-max/N50"
+                if print_with_gap:
+                    non_gap = format(non_gap, ",d")
+                    gapTotal = format(gapTotal, ",d")
+                    mssg += " {} {} {};{};{};{};{}".format(non_gap, gapTotal, gap10, gap100, gap500, gap1k, gap10k)
+                    header += "/nonGapLen/GapLen/Gap#@10;100;500;1k;>1k bp"
+                header += ")"
+                if not disable_header:
+                    print(header)
+
+            print(mssg)
+
+
+def searchByID(entry, IDset, search_negate):
+    """Searches for entries based on a list of IDs"""
+    global id_del_set, IDlen
+    delim_opt = False
+    delimeter = ''
+    IDtoSearch = None
+    field = 0
+
+    entry = entry.split('\n', 1)
+
+    try:
+        defline = ">{}".format(entry[0].strip('>'))
+        # copy of old defn
+        defline_old = defline
+        seq = entry[1]
+    except(IndexError):
+        # Empty Sequence!
+        return
+
+    for o, a in opts:
+        if o == '-D':
+            delim_opt = True
+            delimeter = a
+        if o == '-i':
+            field = int(a) - 1
+            pass
+
+    # if delimeter was specified
+    if delim_opt:
+        try:
+            if delimeter in defline:
+                IDtoSearch = defline.split(delimeter)[field].strip('>').strip()
+        except:
+            pass
+
+    else:
+        IDtoSearch = defline.strip().strip('>')
+        if "|" in IDtoSearch:
+            IDtoSearch = IDtoSearch.split("|")[field]
+        elif " " in IDtoSearch:
+            IDtoSearch = IDtoSearch.split(" ")[field]
+
+    if IDtoSearch in IDset:
+        if not search_negate:
+            print(defline_old + '\n' + seq)
+    else:
+        if search_negate:
+            print(defline_old + '\n' + seq)
+
+#Bao comment: This code block identify the code run as its own or being used by other script
+#Bao comment: fatools wont generate output if this block is missing
+if __name__ == "__main__":
+    searchf = False
+    search_negate = False
+    if sys.argv[1] == 'search':
+        # search and print fasta sequences based on an ID list
+        for o, a in opts:
+            # extract fasta sequences based on ID file
+            if o == '-F':
+                searchf = True
+                database = sys.argv[-1] #Bao commented: this is a fasta file
+                # list of ID's
+                list_ID = a #Bao commented: this is a ID list file
+            if o == '-v':
+                search_negate = True
+
+    try:
+        if searchf:
+            IDset = set()
+            with open(list_ID, 'r') as IDs:
+                for line in IDs:
+                    IDlen = IDlen + 1
+                    IDset.add(line.strip()) #Bao commented: Has to do with -F, don't influence with other modules %
+
+#Bao commented: Below block code has to do with | input %
+            if database == "-":
+                d = sys.stdin
+                read_file_bytes(d, [2, IDset, search_negate])
+            else:
+                with open(database, 'rb') as d:
+                    read_file_bytes(d, [2, IDset, search_negate])
+
+
+#Bao deleted      try: with...       except :            %
+#Bao deleted  print('Please check the fasta file again') %
+#Bao commented: Above block code has to do with | input  %
+
+        else:
+            if sys.argv[-1] == "-":
+                # read input from stdin
+                pipe_input = sys.stdin
+                read_file_bytes(pipe_input, [1])
+
+            else:
+                # read file in byte chunks
+                try:
+                    with open(sys.argv[-1], 'rb') as f:
+                        read_file_bytes(f, [1])
+
+                except IOError:
+                    print('\n Error found: {} is not a valid fasta file \n + Please check the fasta file again or specify "-" if you are using pipe "|" operation \n + Example: fatools filter -F 3 example.fa | report -c - \n'.format(sys.argv[-1]))
+    except (KeyboardInterrupt, IOError):
+        sys.exit()
+#Bao modified: deleted
+    try:
+        sys.stdout.close()
+    except:
+        pass
+    try:
+        sys.stderr.close()
+    except:
+        pass
