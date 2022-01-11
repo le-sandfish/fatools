@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+
+echo "Runtime;Function;Tools" > time.txt
+echo '' > error.log
+n=0
+#Seqkit & fatools Search
+while [ $n -lt 10 ]
+do
+	#Initialize variables and print them in CSV format to import to R:
+	#All tools are run in one thread mode
+	#Not all tools share the same functionality, so some may not present
+
+	# This code block dedicated to SeqKit
+
+	var11=`{ time seqkit grep -j 1 -f $1 $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var12=`{ time seqkit seq -j 1 -m 10000 $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var13=`{ time seqkit seq -j 1 -p -r -v $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var14=`{ time seqkit seq -j 1 -u $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+
+
+	# This code block dedicated to FAtools
+
+	var21=`{ time fatools2 search -F $1 $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var22=`{ time fatools2 filter -l 10000 $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var23=`{ time fatools2 convert -r $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var24=`{ time fatools2 convert -U $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+
+ # This code block dedicated to SeqTK
+
+	var31=`{ time seqtk subseq $2 $1 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1 `
+	var32=`{ time seqtk seq -L10000 $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var33=` { time seqtk seq -r $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1  `
+	var34=` { time seqtk seq -U $2 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1  `
+
+# This code block dediciated to seqmagick:
+
+	var41=`{ time seqmagick convert --include-from-file $1 $2 temp.fasta 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var42=`{ time seqmagick convert -min-length 10000 $2 temp.fasta 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var43=`{ time seqmagick convert --reverse-complement $2 temp.fasta 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+	var44=`{ time seqmagick convert --upper $2 temp.fasta 2>> error.log ; } 2>&1 1> /dev/null | grep real | cut -f2 | cut -d s -f1`
+
+# This code block dedicated for CSV output
+	echo "$var11;SearchByID;SeqKit" >> time.txt
+	echo "$var21;SearchByID;FAtools" >> time.txt
+	echo "$var31;SearchByID;SeqTK" >> time.txt
+	echo "$var41;SearchByID;Seqmagick" >> time.txt
+
+	echo "$var12;FilterByLength;SeqKit" >> time.txt
+	echo "$var22;FilterByLength;FAtools" >> time.txt
+	echo "$var32;FilterByLength;SeqTK" >> time.txt
+	echo "$var42;FilterByLength;Seqmagick" >> time.txt
+
+	echo "$var13;ReverseComplement;SeqKit" >> time.txt
+	echo "$var23;ReverseComplement;FAtools" >> time.txt
+	echo "$var33;ReverseComplement;SeqTK" >> time.txt
+	echo "$var43;ReverseComplement;Seqmagick" >> time.txt
+
+	echo "$var14;To_Uppercase;SeqKit" >> time.txt
+	echo "$var24;To_Uppercase;FAtools" >> time.txt
+	echo "$var34;To_Uppercase;SeqTK" >> time.txt
+	echo "$var44;To_Uppercase;Seqmagick" >> time.txt
+
+
+	n=$(( $n + 1 ))
+	echo "Done with iteration no. $n "
+done
+
+cut time.txt -c 3- > time_copy.txt
